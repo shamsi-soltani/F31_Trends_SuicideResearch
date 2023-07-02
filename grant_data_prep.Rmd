@@ -1,0 +1,199 @@
+---
+title: "Funded US+Canada Health Agency Grants"
+author: "Shamsi Soltani"
+date: "2023-07-01"
+output: html_document
+---
+This doc unifies code from SICCS Summer 2023 in Montreal for my own purposes. I pull US NIH data and Canadian CIHR data and filter for suicide-related research.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = TRUE, # show warnings
+  message = TRUE, # show messages
+  error = TRUE, # do not interrupt generation in case of errors,
+  echo = TRUE  # show R code
+)
+library(pacman)
+p_load(knitr, haven,
+       tidyverse, tidytext, textdata, tm, 
+       maps, SnowballC, wordcloud, topicmodels,
+       repoRter.nih,magrittr,rvest, cld2)
+
+p_load(stopwords,quanteda,quanteda.textmodels,quanteda.textstats,quanteda.textplots)
+    #more text manipulation packages
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+```
+
+#1.0 NIH Data
+##1.1 prep headers for NIH API
+```{r}
+#define fields you want 
+data("nih_fields") 
+
+fields <- nih_fields %>%
+  filter(response_name %in% 
+    c("appl_id", "terms", "activity_code", "project_title", "fiscal_year", "award_amount", "is_active", "project_start_date", "abstract_text","program_officers", "activity_type", "contact_pi_name", "full_foa" , "organization", "organization_type", "agency_ic_fundings"
+      )) %>% pull(include_name)
+```
+
+##1.2 create json for NIH API
+```{r json, echo=FALSE}
+#create json for NIH API
+req <- make_req(criteria = list(advanced_text_search 
+                    = list(operator = "advanced",
+                    search_field = c("terms"
+                                  #   , "abstract", "projecttitle"
+                                  ),
+                    search_text = "(suicide) OR \"self-directed violence\""),
+            # activity_codes = 'F31',
+             fiscal_years = 2000:2023
+             ),
+      include_fields = fields )
+```
+##1.3 retrieve data
+```{r}
+#grants <- get_nih_data(query = req, max_pages = 1, #flatten_result=TRUE)
+
+#remove max pages once query final if seeking more than 500 recs; 
+grants <- get_nih_data(query = req,  flatten_result=TRUE)
+  #Note: API request fails after 15,000 records
+```
+##1.4 choose grant types & filter
+```{r NIH grants types}
+#activity codes ---> F, K grants for students, early career faculty (excludes institutional grants)
+awards = c('F05', 'F30', 'F31', 'F32', 'F33', 
+'F37', 'F38', 'F99', 'FI2', 'FM1',
+#'R00',  'R01', 'R03', 'R13', 'R15', 'R16', 'R18', 
+# 'R21','R24', 'R25', 'R28', 'R2F', 'R30', 
+# 'R33', 'R34', 'R35', 'R36',  'R37', 'R38', 'R41', 'R42', 
+# 'R43', 'R44', 'R49', 'R50',  'R55', 'R56', 'R61', 'R90', 
+# 'RC1', 'RC2', 'RC3', 'RC4',  'RF1', 'RL1', 'RL2', 'RL5', 
+# 'RL9', 'RM1', 'RS1', 
+'K00', 'K01', 'K02', 'K05', 'K06', 
+'K07', 'K08', 'K12', 'K14', 
+'K18', 'K21', 'K22', 'K23', 
+'K24', 'K25', 'K26', 'K30', 'K38', 'K43', 
+'K76', 'K99', 'KD1', 'KL1', 'KL2', 'KM1' )
+```
+
+```{r filter}
+table(grants$activity_code) 
+  #N=225 F31 funded apps in last decade with suicide or self-directed violence as a title, narrative, or key word; 340 total in database
+
+#filter out grant types we don't want
+grants_filt = grants %>% 
+  filter(activity_code %in% awards)
+```
+
+#2.0 CIHR data
+##2.1 pull csv data
+```{r, echo=FALSE}
+setwd("/Users/ssoltani/Desktop/PhD coursework/Cours_SICSS_Montreal/SICSS_Grant-Scraping/00.Data/CIHR")
+
+# store all csv file names
+csv_grants <- list.files(getwd(), pattern = "*.csv")
+
+# load csv files and merge them into one dataframe
+cihr_data <- data.frame() 
+
+for (file in csv_grants) {
+  file_path <- file
+  csv_data <- read.csv(file_path, check.names = F)
+  cihr_data <- bind_rows(cihr_data, csv_data)
+}
+
+# Data filtering/restructuring 
+names(cihr_data)
+#removes accents from var
+names(cihr_data)<-iconv(names(cihr_data), to = "ASCII", sub = "")
+```
+
+```{r}
+cihr_grants <- cihr_data %>% 
+  select('Key-Cl', 'Name-Nom', OrgNm, OrgID, ProvinceEN, CountryEN,
+         'CompetitionYear-AnneDuConcours', 'FiscalYear-AnneFinancire',
+         'AwardAmountinFY-MontantSubventiondeAF', 'TotalAwardAmount-MontantSubventionTotal',
+         ProgramIDProgramme, ProgramNameEN, FundingTypeEN, AreasOfScienceEN, ResearchClassEN,
+         TitreApplicationTitle, 'Keywords-MotsCls', 'Abstract-Rsum') %>% 
+  rename(abstract = 'Abstract-Rsum',
+         key = 'Key-Cl',
+         name = 'Name-Nom',
+         organization = OrgNm,
+         orgID = OrgID,
+         province = ProvinceEN,
+         country = CountryEN,
+         year_comp = 'CompetitionYear-AnneDuConcours', 
+         year_fisc = 'FiscalYear-AnneFinancire',
+         award_amount_FY = 'AwardAmountinFY-MontantSubventiondeAF',
+         award_amount_total = 'TotalAwardAmount-MontantSubventionTotal',
+         programID = ProgramIDProgramme,
+         program_name = ProgramNameEN,
+         funding_type = FundingTypeEN,
+         science_areas = AreasOfScienceEN,
+         research_class = ResearchClassEN,
+         title = TitreApplicationTitle,
+         keywords = 'Keywords-MotsCls') %>% 
+  mutate(abstract = ifelse(nchar(iconv(abstract, to = "ASCII", sub = "")) <= 30, NA, abstract))
+```
+
+##2.2 Clean province column
+```{r}
+#cleaning province 
+prov_terr= c('Alberta', 'Ontario', 'British Columbia', 'Québec', 'Qu<e9>bec','Nova Scotia', 'New Brunswick','Manitoba', 'Prince Edward Island', 'Saskatchewan', 'Newfoundland and Labrador','North West Territories','Nunavut', 'Yukon')
+
+cihr_grants = cihr_grants %>% 
+  mutate(province=ifelse(province %in% c('Unknown/Inconnu', 'Unknown'), 'Unknown', province),
+         province=ifelse(!province %in% c(prov_terr, 'Unknown'), 'Hors du Canada', province),
+         province=ifelse(province %in% c('Québec', 'Qu<e9>bec'), 'Quebec', province)) 
+
+prov= cihr_grants%>% 
+  group_by(province) %>% 
+  summarise(ct=n()) 
+
+ggplot(prov) + geom_col(aes(y=reorder(province,ct), x= ct)) +
+    ggtitle("nombre des award/grant par province, toutes années")
+```
+#3.0 Combine data
+joining US and CA data
+```{r}
+ca_data=suicide_topic
+us_data=grants_filt
+
+#names(us_data)
+
+ca_data = suicide_topic %>% 
+  select(year_fisc, funding_type, award_amount_FY, province, organization, keywords, abstract, title, name) %>% 
+  mutate(country="CA", year_fisc=substr(year_fisc, 1, 4))
+  
+us_data = us_data %>% select(fiscal_year, activity_code, award_amount, organization_org_state, organization_org_name, terms, abstract_text, project_title, contact_pi_name) %>% 
+arrange(fiscal_year, activity_code, award_amount, organization_org_state, organization_org_name, terms, abstract_text, project_title, contact_pi_name) %>% 
+mutate(country="US")
+
+names(us_data)= names(ca_data)
+suicide_data=rbind(ca_data, us_data)
+```
+
+##3.1 adding language into 2-country dataset using title and abstracts' predicted lang
+```{r}
+#req cld2 pkg
+suicide_data= suicide_data %>% 
+  mutate(language_abstr = detect_language(abstract),
+         language_title = detect_language(title))
+
+table(suicide_data$country)
+
+#crosstabs
+suicide_data %>%
+  group_by(country, language_abstr, language_title) %>%
+  tally() %>%
+  spread(country, n)
+
+#test = suicide_data %>%
+#  filter(language_abstr!=language_title)
+    #the one discordant record is fr lang; note abstract predicted correctly (more text)
+
+suicide_data= suicide_data %>% 
+  mutate(lang = ifelse((language_abstr=='fr'|language_title=='fr'),'fr','en'),
+         lang = ifelse((is.na(lang) & (language_abstr=='en'|language_title=='en')),'en',lang)) %>% 
+  select(-c(language_abstr, language_title))
+```

@@ -1,0 +1,318 @@
+---
+title: "suicide_grant_analysis"
+author: "Shamsi Soltani"
+date: "2023-07-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Data prepared with grant_data_prep.Rmd
+
+#1.0 Visualizing funding 
+Note: Dollars not converted to unified scale. 
+#1.1 data aggregation for 2-country dataset
+
+```{r}
+grants_agg = suicide_data %>% 
+  select(year_fisc, funding_type, award_amount_FY, province, organization, country) %>%
+  group_by(year_fisc, country) %>%
+  summarise(award_sum= sum(award_amount_FY),
+            award_mean= mean(award_amount_FY),
+            award_median= median(award_amount_FY), 
+            awardct= n(),
+            orgct= n_distinct(organization)) 
+```
+
+#1.2 US vs Canada stats over time
+
+```{r}
+grants_agg %>%   
+  ggplot(aes(x=year_fisc, y=award_mean/1000000, group=country)) +
+  geom_point(aes(  col=country)) +
+    geom_line(aes(  col=country)) +
+  ggtitle("Award/Grant Moyen par Année au Sujet de Suicide") +
+  theme(axis.text.x = element_text(angle = 90, vjust = .5)) +
+  labs(x="Year", y="Montant, milliard de $")
+```
+
+```{r}
+grants_agg %>%   
+  ggplot(aes(x=year_fisc, y=award_median/1000, group=country)) +
+  geom_point(aes( col=country)) +
+   geom_line(aes( col=country)) +
+  ggtitle("Grant/Award Medien par Année au Sujet de Suicide") +
+  theme(axis.text.x = element_text(angle = 90, vjust = .5)) +
+  labs(x="Year", y="Montant, mille de $")
+```
+
+```{r}
+grants_agg %>%   
+  ggplot(aes(x=year_fisc, y=(award_sum/1000000), group=country)) +
+  geom_point(aes(col=country)) +
+    geom_line(aes( col=country)) +
+  ggtitle("Grant/Award Total par Année au Sujet de Suicide") +
+  theme(axis.text.x = element_text(angle = 90, vjust = .5)) +
+  labs(x="Year", y="Montant, par milliard de $") 
+```
+
+#2.0 text analysis ##2.1 keyword corpus, tdm, wordcloud
+
+```{r}
+p_load(tm, SnowballC,tidytext,wordcloud,stopwords,quanteda,quanteda.textmodels,quanteda.textstats,quanteda.textplots)
+    #had to update R to get quanteda
+
+# Dfm of Keywords
+keywords_dfm <- suicide_data %>% 
+  filter(!is.na(keywords)) %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "keywords",  unique_docnames = FALSE) %>% 
+    tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>% 
+    tokens_tolower() %>% 
+    tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+    tokens_remove(stopwords("fr", source = "stopwords-iso")) %>% 
+ #   tokens_remove(c("health", "unspecified", "spécifié")) %>% 
+    tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>% 
+    dfm() 
+
+#word cloud comparison by language; over-represents fr-canada
+keywords_dfm %>% 
+    dfm_group(groups = lang) %>%
+    textplot_wordcloud(min_size = .7,comparison = TRUE, max_words = 200, color = c("#BF0D3E", "#0055a4"))
+
+#word cloud comparison by country
+keywords_dfm %>% 
+    dfm_group(groups = country) %>%
+    textplot_wordcloud(min_size = .7,comparison = TRUE, max_words = 200, color = c("#BF0D3E", "#0055a4"))
+```
+
+##2.2 title corpus and tdm
+
+```{r}
+# Dfm of Titles
+titles_dfm <- suicide_data %>% 
+  filter(!is.na(title)) %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "title",  unique_docnames = FALSE) %>% 
+    tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>% 
+    tokens_tolower() %>% 
+    tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+    tokens_remove(stopwords("fr", source = "stopwords-iso")) %>% 
+ #   tokens_remove(c("health", "unspecified", "spécifié")) %>% 
+    tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>% 
+    dfm() 
+```
+
+```{r}
+# most common words in titles
+titles_freq_by_year <- textstat_frequency(titles_dfm, groups = docvars(titles_dfm, "year_fisc")) 
+titles_freq_by_year$group <- as.numeric(titles_freq_by_year$group)
+
+subset(titles_freq_by_year, rank == 1 | rank == 2 | rank == 3) %>%
+   select(feature, group) %>%
+  arrange() 
+
+ggplot(subset(titles_freq_by_year, (rank == 1 | rank == 2 | rank == 3) & (group >= 1995)), 
+       aes(group, feature, fill = rank)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "darkblue", high = "lightblue") +
+  xlab("Year") +
+  ylab("Word") +
+  ggtitle("Ranking of most common title words in CIHR & NIH\nfunded projects with 'suicide' keyword, by year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+##2.3 country keywords
+
+```{r}
+# Most common keywords for each year per country 
+
+#create keyword corpus 
+keywords_corpus <- suicide_data %>% 
+  filter(!is.na(keywords)) %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "keywords",  unique_docnames = FALSE)
+
+# function to filter keyword_corpus by province and create tileplot
+top_keywords_country_plot <- function(country_input){
+             country_filtered_dfm <-  corpus_subset(keywords_corpus, 
+                                         country %in%
+                            paste0(country_input)) %>%
+                            tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>%
+                            tokens_tolower() %>% 
+                            tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+                            tokens_remove(stopwords("fr", source = "stopwords-iso")) %>%
+               dfm() 
+  
+  keyword_freq_by_year <- textstat_frequency(country_filtered_dfm, groups = docvars(country_filtered_dfm, "year_fisc")) 
+  keyword_freq_by_year$group <- as.numeric(keyword_freq_by_year$group)
+  
+  tile_plot <- ggplot(subset(keyword_freq_by_year, rank == 1 | rank == 2 | rank == 3), aes(group, feature, fill = rank)) +
+                geom_tile(color = "white") +
+                scale_fill_gradient(breaks = c(1, 2, 3), low = "darkblue", high = "lightblue") +
+                xlab("Year") +
+                ylab("Word") +
+                ggtitle(paste("Ranking of most common keywords in NIH/ CIHR funded projects per year in", country_input)) +
+                theme_minimal() +
+                theme(plot.title = element_text(size = 11), axis.text.x = element_text(angle = 45, hjust = 1)) 
+                
+  return(tile_plot)
+}
+
+# apply function 
+top_keywords_country_plot("US")
+top_keywords_country_plot("CA")
+```
+
+##2.4 F31 abstract/title words by year
+
+```{r}
+#create keyword corpus for F31s
+F31_key_corpus <- suicide_data %>% 
+  filter(!is.na(keywords), funding_type=="F31") %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "keywords",  unique_docnames = FALSE)
+
+F31_abstract_corpus <- suicide_data %>% 
+  filter(!is.na(abstract), funding_type=="F31") %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "abstract",  unique_docnames = FALSE)
+
+F31_title_corpus <- suicide_data %>% 
+  filter(!is.na(title), funding_type=="F31") %>% 
+  mutate(key=row_number()) %>% 
+  corpus(docid_field = "key", text_field = "title",  unique_docnames = FALSE)
+```
+
+```{r}
+#data prep
+F31_key_dfm <-  corpus_subset(F31_key_corpus) %>%
+  tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+  tokens_remove(stopwords("fr", source = "stopwords-iso")) %>%
+  dfm() 
+
+F31_abstract_dfm <-  corpus_subset(F31_abstract_corpus) %>%
+  tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+  tokens_remove(stopwords("fr", source = "stopwords-iso")) %>%
+  dfm() 
+
+F31_title_dfm <-  corpus_subset(F31_title_corpus) %>%
+  tokens(remove_symbols = TRUE, remove_numbers = TRUE, remove_url = TRUE, remove_punct = TRUE) %>%
+  tokens_tolower() %>% 
+  tokens_remove(stopwords("en", source = "stopwords-iso")) %>% 
+  tokens_remove(stopwords("fr", source = "stopwords-iso")) %>%
+  dfm() 
+keyword_freq_by_year <- textstat_frequency(F31_key_dfm, groups = docvars(F31_key_dfm, "year_fisc")) 
+  keyword_freq_by_year$group <- as.numeric(keyword_freq_by_year$group)
+  
+title_freq_by_year <- textstat_frequency(F31_title_dfm, groups = docvars(F31_title_dfm, "year_fisc")) 
+  keyword_freq_by_year$group <- as.numeric(keyword_freq_by_year$group)
+```
+
+```{r plot}
+#tile plots
+ggplot(subset(keyword_freq_by_year, (rank == 1 | rank == 2 | rank == 3) & (group >= 1995)), 
+       aes(group, feature, fill = rank)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "darkblue", high = "lightblue") +
+  xlab("Year") +
+  ylab("Word") +
+  ggtitle("Ranking of most common NIH F31 keywords\namong funded projects with 'suicide' keyword, by year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(subset(abstract_freq_by_year, (rank == 1 | rank == 2 | rank == 3) & (group >= 1995)), 
+       aes(group, feature, fill = rank)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "darkblue", high = "lightblue") +
+  xlab("Year") +
+  ylab("Word") +
+  ggtitle("Ranking of most common NIH F31 abstract words \namong funded projects with 'suicide' keyword, by year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(subset(title_freq_by_year, (rank == 1 | rank == 2 | rank == 3) & (group >= 1995)), 
+       aes(group, feature, fill = rank)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "darkblue", high = "lightblue") +
+  xlab("Year") +
+  ylab("Word") +
+  ggtitle("Ranking of most common NIH F31 title words \namong funded projects with 'suicide' keyword, by year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+#3.0 program officer and funding agency for NIH F31 grants
+```{r}
+unique_titles = suicide_data %>%
+  filter(funding_type=="F31") %>%  distinct(title)
+nrow(unique_titles)
+#165 unique suicide-related F31s
+```
+##3.1 flatten NIH data to extract values stored in lists
+```{r flatten NIH data}
+nih_data = grants_filt %>%
+  filter(activity_code=="F31")%>%
+  unnest(c(program_officers,agency_ic_fundings)) %>%
+  select(contact_pi_name,project_title,fiscal_year,organization_org_name,name,full_name, abbreviation) %>% 
+  rename(NIH_agency=name, program_officer=full_name, NIH_abbrev = abbreviation) %>% 
+  mutate(program_officer= str_to_title(gsub("\\s+", " ", str_trim(program_officer))))
+```
+##3.2 visualize agency of award
+```{r}
+library(ggrepel)
+
+nih_data %>% group_by(NIH_agency, NIH_abbrev, fiscal_year) %>% 
+  summarise(count=n_distinct(project_title)) %>% 
+  mutate(label = if_else(fiscal_year == 2021 & as.character(NIH_abbrev)=="NIMH", as.character(NIH_abbrev), NA_character_)) %>% 
+  ggplot(aes(x=fiscal_year, y=count, group=NIH_agency)) +
+  geom_point(aes(col=NIH_agency)) +
+  geom_line(aes(  col=NIH_agency)) +
+  ggtitle("Annual # F31 awards with 'suicide' keyword by NIH agency") +
+  theme(axis.text.x = element_text(angle = 45, vjust = .5)) +
+  labs(x="Fiscal Year", y="F31 Count") +
+#  geom_text(aes(x=fiscal_year, y=count, label = NIH_abbrev, col=NIH_agency))
+  geom_label_repel(aes(label = label),
+                  nudge_x = 1, max.overlaps=20, na.rm = TRUE) +
+  xlim(2000,2022) + 
+  theme(legend.position="none") 
+```
+```{r}
+test =nih_data %>% group_by(NIH_agency, NIH_abbrev, fiscal_year) %>% 
+  summarise(count=n())
+
+nih_data%>% 
+  ggplot(aes(x = fiscal_year,  fill = NIH_abbrev)) + 
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, vjust = .5)) +
+  labs(x="Fiscal Year", y="F31 Count") +
+  xlim(1999,2023) +
+  ggtitle("Annual # F31 awards with 'suicide' keyword by NIH agency") + theme_minimal()
+```
+##3.3 explore program officers
+```{r}
+#list of program officers with most suicide-rel apps
+top_po = nih_data %>% filter(fiscal_year>2018) %>% 
+  group_by(program_officer) %>% summarise(ct=n()) %>% 
+  arrange(desc(ct)) %>% 
+  top_n(5) %>% select(program_officer) %>% pull()
+
+#View(nih_data %>% filter(program_officer=="Belinda E. Sims") )
+test = nih_data %>% 
+  filter(program_officer %in% top_po, fiscal_year>2018) %>% 
+  group_by(project_title, contact_pi_name, program_officer, NIH_abbrev, organization_org_name) %>% 
+  summarise(year= min(fiscal_year))%>%
+  arrange(desc(program_officer), year)
+```
+##3.4 text themes by agency
+```{r}
+#explore text themes by agency
+```
+
