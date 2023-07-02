@@ -5,3 +5,5 @@ Following my Montreal Summer Institutes in Computational Social Science (SICCS) 
 Methods include:
   - Text analysis (corpus, document term matrices)
   - Tile plots
+  - Trends over time
+  - Good ole bar charts
